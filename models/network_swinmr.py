@@ -1,3 +1,15 @@
+'''
+# -----------------------------------------
+Network
+SwinMR m.1.1
+by Jiahao Huang (j.huang21@imperial.ac.uk)
+
+Thanks:
+https://github.com/JingyunLiang/SwinIR
+https://github.com/microsoft/Swin-Transformer
+# -----------------------------------------
+'''
+
 import math
 import torch
 import torch.nn as nn
@@ -920,7 +932,7 @@ if __name__ == '__main__':
     width = 256
     device = 'cuda'
     torch.cuda.empty_cache()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
     print('swinmr')
     model = SwinIR(upscale=1,
@@ -935,12 +947,14 @@ if __name__ == '__main__':
                    upsampler='',
                    resi_connection='1conv',).to(device)
 
+
     # print(model)
-    print('FLOPs: {}G'.format(round((model.flops() * 1e-9),3)))
-    print('PARAMs: {}M'.format(round((model.params() * 1e-6), 3)))
+    # print('FLOPs: {}G'.format(round((model.flops() * 1e-9),3)))
+    # print('PARAMs: {}M'.format(round((model.params() * 1e-6), 3)))
     x = torch.randn((batch, 1, height, width)).to(device)
     print(f'Input shape: {x.shape}')
-    # x = model(x)
+    with torch.no_grad():
+        x = model(x)
     print(f'Output shape: {x.shape}')
     print('-------------------------------')
 

@@ -1,5 +1,7 @@
 # SwinGANMR
 
+by Jiahao Huang (j.huang21@imperial.ac.uk)
+
 This is the official implementation of our proposed ST-GAN, EES-GAN and TES-GAN:
 
 Fast MRI Reconstruction: How Powerful Transformers Are?
@@ -22,7 +24,7 @@ archivePrefix = {arXiv},
 }
 ```
 
-![Overview_of_SwinGANMR](./tmp/Overview.png)
+![Overview_of_SwinGANMR](./tmp/files/SwinGANMR.png)
 
 
 ## Requirements

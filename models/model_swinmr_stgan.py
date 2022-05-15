@@ -1,3 +1,11 @@
+'''
+# -----------------------------------------
+Model
+ST-GAN m.1.1
+by Jiahao Huang (j.huang21@imperial.ac.uk)
+# -----------------------------------------
+'''
+
 from collections import OrderedDict
 import torch
 import torch.nn as nn
