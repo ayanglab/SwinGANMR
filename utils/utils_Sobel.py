@@ -41,10 +41,11 @@ def sobel(src, device):
 
     dst_x = conv_opx(src)
     dst_y = conv_opy(src)
-    dst = torch.abs(torch.add(dst_x/2, dst_y/2))
-
+    # dst = torch.abs(torch.add(dst_x/2, dst_y/2))
+    dst = torch.add(torch.abs(dst_x / 2), torch.abs(dst_y / 2))
     # 0~+
     return dst
+
 
 if __name__ == "__main__":
 
