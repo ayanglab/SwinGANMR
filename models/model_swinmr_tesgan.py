@@ -1,7 +1,7 @@
 '''
 # -----------------------------------------
 Model
-TES-GAN m.1.1
+TES-GAN m.1.3
 by Jiahao Huang (j.huang21@imperial.ac.uk)
 # -----------------------------------------
 '''
@@ -23,14 +23,21 @@ from utils.utils_swinmr import *
 from utils.utils_Gabor import *
 from utils.utils_Sobel import *
 
+import matplotlib.pyplot as plt
+import einops
+import wandb
+from math import ceil
+import copy
+
+
 class MRI_TESGAN(ModelBase):
-    """Train with pixel-VGG-GAN loss"""
     def __init__(self, opt):
         super(MRI_TESGAN, self).__init__(opt)
         # ------------------------------------
         # define network
         # ------------------------------------
         self.opt_train = self.opt['train']    # training option
+        self.opt_dataset = self.opt['datasets']
         self.netG = define_G(opt)
         self.netG = self.model_to_device(self.netG)
         if self.is_train:
@@ -40,7 +47,11 @@ class MRI_TESGAN(ModelBase):
             self.netD_g = self.model_to_device(self.netD_g)
             if self.opt_train['E_decay'] > 0:
                 self.netE = define_G(opt).to(self.device).eval()
-
+        if opt['rank'] == 0:
+            wandb.watch(self.netG)
+            if self.is_train:
+                wandb.watch(self.netD)
+                wandb.watch(self.netD_g)
     """
     # ----------------------------------------
     # Preparation before training with data
@@ -63,7 +74,7 @@ class MRI_TESGAN(ModelBase):
         self.log_dict = OrderedDict()         # log
 
     # ----------------------------------------
-    # load pre-trained G and D model
+    # load pre-trained G D and E model
     # ----------------------------------------
     def load(self):
         load_path_G = self.opt['path']['pretrained_netG']
@@ -79,7 +90,6 @@ class MRI_TESGAN(ModelBase):
                 print('Copying model for E')
                 self.update_E(0)
             self.netE.eval()
-
         load_path_D = self.opt['path']['pretrained_netD']
         if self.opt['is_train'] and load_path_D is not None:
             print('Loading model for D [{:s}] ...'.format(load_path_D))
@@ -127,9 +137,8 @@ class MRI_TESGAN(ModelBase):
     # ----------------------------------------
     def define_loss(self):
         # ------------------------------------
-        # 1) G_loss
+        # G_loss
         # ------------------------------------
-
         G_lossfn_type = self.opt_train['G_lossfn_type']
         if G_lossfn_type == 'l1':
             self.G_lossfn = nn.L1Loss().to(self.device)
@@ -147,7 +156,7 @@ class MRI_TESGAN(ModelBase):
         self.perceptual_lossfn = PerceptualLoss().to(self.device)
 
         # ------------------------------------
-        # 3) D_loss
+        # D_loss
         # ------------------------------------
         self.D_lossfn = GANLoss(self.opt_train['gan_type'], 1.0, 0.0).to(self.device)
         self.D_lossfn_weight = self.opt_train['D_lossfn_weight']
@@ -178,7 +187,7 @@ class MRI_TESGAN(ModelBase):
         return self.alpha * self.loss_image + self.beta * self.loss_freq + self.gamma * self.loss_perc
 
     # ----------------------------------------
-    # define optimizer, G and D
+    # define optimizer for G and D
     # ----------------------------------------
     def define_optimizer(self):
         G_optim_params = []
@@ -220,10 +229,10 @@ class MRI_TESGAN(ModelBase):
     def feed_data(self, data, need_H=True):
         self.H = data['H'].to(self.device)
         self.L = data['L'].to(self.device)
-        self.mask = data['mask'].to(self.device)
+        # self.mask = data['mask'].to(self.device)
 
     # ----------------------------------------
-    # feed L to netG and get E
+    # feed L to netG
     # ----------------------------------------
     def netG_forward(self):
         self.E = self.netG(self.L)
@@ -322,6 +331,35 @@ class MRI_TESGAN(ModelBase):
         if self.opt_train['E_decay'] > 0:
             self.update_E(self.opt_train['E_decay'])
 
+    def record_loss_for_val(self):
+
+        G_loss = self.G_lossfn_weight * self.total_loss()
+
+        self.log_dict['G_loss'] = G_loss.item()
+        self.log_dict['G_loss_image'] = self.loss_image.item()
+        self.log_dict['G_loss_frequency'] = self.loss_freq.item()
+        self.log_dict['G_loss_preceptual'] = self.loss_perc.item()
+        self.log_dict['G_loss_adversarial'] = self.loss_adversarial.item()
+
+    def check_windowsize(self):
+
+        self.window_size = self.opt['netG']['window_size']
+        _, _, h_old, w_old = self.H.size()
+        h_pad = ceil(h_old / self.window_size) * self.window_size - h_old  # downsampling for 3 times (2^3=8)
+        w_pad = ceil(w_old / self.window_size) * self.window_size - w_old
+        self.h_old = h_old
+        self.w_old = w_old
+        self.H = torch.cat([self.H, torch.flip(self.H, [2])], 2)[:, :, :h_old + h_pad, :]
+        self.H = torch.cat([self.H, torch.flip(self.H, [3])], 3)[:, :, :, :w_old + w_pad]
+        self.L = torch.cat([self.L, torch.flip(self.L, [2])], 2)[:, :, :h_old + h_pad, :]
+        self.L = torch.cat([self.L, torch.flip(self.L, [3])], 3)[:, :, :, :w_old + w_pad]
+
+    def recover_windowsize(self):
+
+        self.L = self.L[..., :self.h_old, :self.w_old]
+        self.H = self.H[..., :self.h_old, :self.w_old]
+        self.E = self.E[..., :self.h_old, :self.w_old]
+
     # ----------------------------------------
     # test / inference
     # ----------------------------------------
@@ -339,7 +377,7 @@ class MRI_TESGAN(ModelBase):
         return self.log_dict
 
     # ----------------------------------------
-    # get L, E, H images
+    # get L, E, H image
     # ----------------------------------------
     def current_visuals(self, need_H=True):
         out_dict = OrderedDict()
@@ -347,6 +385,14 @@ class MRI_TESGAN(ModelBase):
         out_dict['E'] = self.E.detach()[0].float().cpu()
         if need_H:
             out_dict['H'] = self.H.detach()[0].float().cpu()
+        return out_dict
+
+    def current_visuals_gpu(self, need_H=True):
+        out_dict = OrderedDict()
+        out_dict['L'] = self.L.detach()[0].float()
+        out_dict['E'] = self.E.detach()[0].float()
+        if need_H:
+            out_dict['H'] = self.H.detach()[0].float()
         return out_dict
 
     # ----------------------------------------
@@ -360,9 +406,17 @@ class MRI_TESGAN(ModelBase):
             out_dict['H'] = self.H.detach().float().cpu()
         return out_dict
 
+    def current_results_gpu(self, need_H=True):
+        out_dict = OrderedDict()
+        out_dict['L'] = self.L.detach().float()
+        out_dict['E'] = self.E.detach().float()
+        if need_H:
+            out_dict['H'] = self.H.detach().float()
+        return out_dict
+
     """
     # ----------------------------------------
-    # Information of netG, netD and netF
+    # Information of netG, netD
     # ----------------------------------------
     """
 

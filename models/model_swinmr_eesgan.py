@@ -1,7 +1,7 @@
 '''
 # -----------------------------------------
 Model
-ST-GAN m.1.3
+EES-GAN m.1.3
 by Jiahao Huang (j.huang21@imperial.ac.uk)
 # -----------------------------------------
 '''
@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.optim import lr_scheduler
 from torch.optim import Adam
 
-from models.select_network import define_G, define_D
+from models.select_network import define_G, define_D, define_D_g
 from models.model_base import ModelBase
 from models.loss import GANLoss, CharbonnierLoss, PerceptualLoss
 from models.loss_ssim import SSIMLoss
@@ -20,6 +20,8 @@ from models.loss_ssim import SSIMLoss
 from utils.utils_model import test_mode
 from utils.utils_regularizers import regularizer_orth, regularizer_clip
 from utils.utils_swinmr import *
+from utils.utils_Gabor import *
+from utils.utils_Sobel import *
 
 import matplotlib.pyplot as plt
 import einops
@@ -28,9 +30,9 @@ from math import ceil
 import copy
 
 
-class MRI_STGAN(ModelBase):
+class MRI_EESGAN(ModelBase):
     def __init__(self, opt):
-        super(MRI_STGAN, self).__init__(opt)
+        super(MRI_EESGAN, self).__init__(opt)
         # ------------------------------------
         # define network
         # ------------------------------------
@@ -41,14 +43,15 @@ class MRI_STGAN(ModelBase):
         if self.is_train:
             self.netD = define_D(opt)
             self.netD = self.model_to_device(self.netD)
-        if self.opt_train['E_decay'] > 0:
-            self.netE = define_G(opt).to(self.device).eval()
+            self.netD_g = define_D_g(opt)
+            self.netD_g = self.model_to_device(self.netD_g)
+            if self.opt_train['E_decay'] > 0:
+                self.netE = define_G(opt).to(self.device).eval()
         if opt['rank'] == 0:
             wandb.watch(self.netG)
             if self.is_train:
                 wandb.watch(self.netD)
-
-
+                wandb.watch(self.netD_g)
     """
     # ----------------------------------------
     # Preparation before training with data
@@ -63,6 +66,7 @@ class MRI_STGAN(ModelBase):
         self.load()                           # load model
         self.netG.train()                     # set training mode,for BN
         self.netD.train()                     # set training mode,for BN
+        self.netD_g.train()                   # set training mode,for BN
         self.define_loss()                    # define loss
         self.define_optimizer()               # define optimizer
         self.load_optimizers()                # load optimizer
@@ -89,7 +93,11 @@ class MRI_STGAN(ModelBase):
         load_path_D = self.opt['path']['pretrained_netD']
         if self.opt['is_train'] and load_path_D is not None:
             print('Loading model for D [{:s}] ...'.format(load_path_D))
-            self.load_network(load_path_D, self.netD, strict=self.opt_train['D_param_strict'])
+            self.load_network(load_path_D, self.netD, strict=self.opt_train['D_g_param_strict'])
+        load_path_D_g = self.opt['path']['pretrained_netD_g']
+        if self.opt['is_train'] and load_path_D_g is not None:
+            print('Loading model for D_g[{:s}] ...'.format(load_path_D_g))
+            self.load_network(load_path_D_g, self.netD_g, strict=self.opt_train['D_g_param_strict'])
 
     # ----------------------------------------
     # load optimizerG and optimizerD
@@ -103,6 +111,10 @@ class MRI_STGAN(ModelBase):
         if load_path_optimizerD is not None and self.opt_train['D_optimizer_reuse']:
             print('Loading optimizerD [{:s}] ...'.format(load_path_optimizerD))
             self.load_optimizer(load_path_optimizerD, self.D_optimizer)
+        load_path_optimizerD_g = self.opt['path']['pretrained_optimizerD_g']
+        if load_path_optimizerD_g is not None and self.opt_train['D_g_optimizer_reuse']:
+            print('Loading optimizerD_g [{:s}] ...'.format(load_path_optimizerD_g))
+            self.load_optimizer(load_path_optimizerD_g, self.D_g_optimizer)
 
     # ----------------------------------------
     # save model / optimizer(optional)
@@ -110,12 +122,15 @@ class MRI_STGAN(ModelBase):
     def save(self, iter_label):
         self.save_network(self.save_dir, self.netG, 'G', iter_label)
         self.save_network(self.save_dir, self.netD, 'D', iter_label)
+        self.save_network(self.save_dir, self.netD_g, 'D_g', iter_label)
         if self.opt_train['E_decay'] > 0:
             self.save_network(self.save_dir, self.netE, 'E', iter_label)
         if self.opt_train['G_optimizer_reuse']:
             self.save_optimizer(self.save_dir, self.G_optimizer, 'optimizerG', iter_label)
         if self.opt_train['D_optimizer_reuse']:
             self.save_optimizer(self.save_dir, self.D_optimizer, 'optimizerD', iter_label)
+        if self.opt_train['D_g_optimizer_reuse']:
+            self.save_optimizer(self.save_dir, self.D_g_optimizer, 'optimizerD_g', iter_label)
 
     # ----------------------------------------
     # define loss
@@ -149,6 +164,12 @@ class MRI_STGAN(ModelBase):
         self.D_update_ratio = self.opt_train['D_update_ratio'] if self.opt_train['D_update_ratio'] else 1
         self.D_init_iters = self.opt_train['D_init_iters'] if self.opt_train['D_init_iters'] else 0
 
+        self.D_g_lossfn = GANLoss(self.opt_train['gan_type'], 1.0, 0.0).to(self.device)
+        self.D_g_lossfn_weight = self.opt_train['D_g_lossfn_weight']
+
+        self.D_g_update_ratio = self.opt_train['D_g_update_ratio'] if self.opt_train['D_g_update_ratio'] else 1
+        self.D_g_init_iters = self.opt_train['D_g_init_iters'] if self.opt_train['D_g_init_iters'] else 0
+
     def total_loss(self):
 
         self.alpha = self.opt_train['alpha']
@@ -177,6 +198,7 @@ class MRI_STGAN(ModelBase):
                 print('Params [{:s}] will not optimize.'.format(k))
         self.G_optimizer = Adam(G_optim_params, lr=self.opt_train['G_optimizer_lr'], weight_decay=0)
         self.D_optimizer = Adam(self.netD.parameters(), lr=self.opt_train['D_optimizer_lr'], weight_decay=0)
+        self.D_g_optimizer = Adam(self.netD_g.parameters(), lr=self.opt_train['D_g_optimizer_lr'], weight_decay=0)
 
     # ----------------------------------------
     # define scheduler, only "MultiStepLR"
@@ -190,7 +212,10 @@ class MRI_STGAN(ModelBase):
                                                         self.opt_train['D_scheduler_milestones'],
                                                         self.opt_train['D_scheduler_gamma']
                                                         ))
-
+        self.schedulers.append(lr_scheduler.MultiStepLR(self.D_g_optimizer,
+                                                        self.opt_train['D_g_scheduler_milestones'],
+                                                        self.opt_train['D_g_scheduler_gamma']
+                                                        ))
     """
     # ----------------------------------------
     # Optimization during training with data
@@ -212,6 +237,23 @@ class MRI_STGAN(ModelBase):
     def netG_forward(self):
         self.E = self.netG(self.L)
 
+
+    # ----------------------------------------
+    # Gabor
+    # ----------------------------------------
+    def get_gabor(self):
+
+        if self.opt_train['sobel_type'] == 'ori':
+            self.L_sobel = sobel(self.L, self.device)
+            self.E_sobel = sobel(self.E, self.device)
+            self.H_sobel = sobel(self.H, self.device)
+        elif self.opt_train['sobel_type'] == 'm1':
+            self.L_sobel = sobel_m1(self.L, self.device)
+            self.E_sobel = sobel_m1(self.E, self.device)
+            self.H_sobel = sobel_m1(self.H, self.device)
+        else:
+            NotImplementedError
+
     # ----------------------------------------
     # update parameters and get loss
     # ----------------------------------------
@@ -221,14 +263,18 @@ class MRI_STGAN(ModelBase):
         # ------------------------------------
         for p in self.netD.parameters():
             p.requires_grad = False
+        for p in self.netD_g.parameters():
+            p.requires_grad = False
 
         self.G_optimizer.zero_grad()
         self.netG_forward()
+        self.get_gabor()
 
         if current_step % self.D_update_ratio == 0 and current_step > self.D_init_iters:  # updata D first
 
             pred_g_fake = self.netD(self.E)
-            self.loss_adversarial = self.D_lossfn(pred_g_fake, True)
+            pred_g_fake_g = self.netD_g(self.E_sobel)
+            self.loss_adversarial = (self.D_lossfn(pred_g_fake, True) + self.D_g_lossfn(pred_g_fake_g, True))/2
             loss_G_total = self.G_lossfn_weight * self.total_loss() + self.D_lossfn_weight * self.loss_adversarial
 
             loss_G_total.backward()
@@ -241,6 +287,16 @@ class MRI_STGAN(ModelBase):
             p.requires_grad = True
         self.D_optimizer.zero_grad()
 
+        for p in self.netD_g.parameters():
+            p.requires_grad = True
+        self.D_g_optimizer.zero_grad()
+        # In order to avoid the error in distributed training:
+        # "Error detected in CudnnBatchNormBackward: RuntimeError: one of
+        # the variables needed for gradient computation has been modified by
+        # an inplace operation",
+        # we separate the backwards for real and fake, and also detach the
+        # tensor for calculating mean.
+
         # real
         pred_d_real = self.netD(self.H)                # 1) real data
         l_d_real = self.D_lossfn(pred_d_real, True)
@@ -251,6 +307,18 @@ class MRI_STGAN(ModelBase):
         l_d_fake.backward()
 
         self.D_optimizer.step()
+
+        # real
+        pred_d_real_g = self.netD_g(self.H_sobel)                # 1) real data
+        l_d_real_g = self.D_g_lossfn(pred_d_real_g, True)
+        l_d_real_g.backward()
+        # fake
+        pred_d_fake_g = self.netD_g(self.E_sobel.detach().clone()) # 2) fake data, detach to avoid BP to G
+        l_d_fake_g = self.D_g_lossfn(pred_d_fake_g, False)
+        l_d_fake_g.backward()
+
+        self.D_g_optimizer.step()
+
 
         # ------------------------------------
         # record log
@@ -264,6 +332,9 @@ class MRI_STGAN(ModelBase):
 
         self.log_dict['D_loss_real'] = torch.mean(l_d_real.detach())
         self.log_dict['D_loss_fake'] = torch.mean(l_d_fake.detach())
+
+        self.log_dict['D_g_loss_real'] = torch.mean(l_d_real_g.detach())
+        self.log_dict['D_g_loss_fake'] = torch.mean(l_d_fake_g.detach())
 
         if self.opt_train['E_decay'] > 0:
             self.update_E(self.opt_train['E_decay'])
@@ -304,6 +375,7 @@ class MRI_STGAN(ModelBase):
         self.netG.eval()
         with torch.no_grad():
             self.netG_forward()
+            self.get_gabor()
         self.netG.train()
 
     # ----------------------------------------
@@ -365,6 +437,9 @@ class MRI_STGAN(ModelBase):
         if self.is_train:
             msg = self.describe_network(self.netD)
             print(msg)
+            msg = self.describe_network(self.netD_g)
+            print(msg)
+
 
     # ----------------------------------------
     # print params
@@ -380,6 +455,7 @@ class MRI_STGAN(ModelBase):
         msg = self.describe_network(self.netG)
         if self.is_train:
             msg += self.describe_network(self.netD)
+            msg += self.describe_network(self.netD_g)
         return msg
 
     # ----------------------------------------

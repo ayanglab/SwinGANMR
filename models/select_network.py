@@ -1,21 +1,31 @@
+'''
+# -----------------------------------------
+Define Training Network
+by Jiahao Huang (j.huang21@imperial.ac.uk)
+# -----------------------------------------
+'''
+
 import functools
 import torch
+import torchvision.models
 from torch.nn import init
 
 
-
-
 # --------------------------------------------
-# Generator, netG, G
+# Recon Generator, netG, G
 # --------------------------------------------
 def define_G(opt):
     opt_net = opt['netG']
     net_type = opt_net['net_type']
 
+    # ----------------------------------------
+    # SwinIR (for SwinMR)
+    # ----------------------------------------
     if net_type == 'swinir':
         from models.network_swinmr import SwinIR as net
         netG = net(img_size=opt_net['img_size'],
                    in_chans=opt_net['in_chans'],
+                   out_chans=opt_net['out_chans'],
                    embed_dim=opt_net['embed_dim'],
                    depths=opt_net['depths'],
                    num_heads=opt_net['num_heads'],
@@ -49,7 +59,7 @@ def define_D(opt):
     net_type = opt_net['net_type']
 
     # ----------------------------------------
-    # discriminator_vgg_96
+    # (NOT CEHCK YET) discriminator_vgg_96
     # ----------------------------------------
     if net_type == 'discriminator_vgg_96':
         from models.network_discriminator import Discriminator_VGG_96 as discriminator
@@ -58,7 +68,7 @@ def define_D(opt):
                              ac_type=opt_net['act_mode'])
 
     # ----------------------------------------
-    # discriminator_vgg_128
+    # (NOT CEHCK YET) discriminator_vgg_128
     # ----------------------------------------
     elif net_type == 'discriminator_vgg_128':
         from models.network_discriminator import Discriminator_VGG_128 as discriminator
@@ -67,7 +77,7 @@ def define_D(opt):
                              ac_type=opt_net['act_mode'])
 
     # ----------------------------------------
-    # discriminator_vgg_192
+    # (NOT CEHCK YET) discriminator_vgg_192
     # ----------------------------------------
     elif net_type == 'discriminator_vgg_192':
         from models.network_discriminator import Discriminator_VGG_192 as discriminator
@@ -76,12 +86,15 @@ def define_D(opt):
                              ac_type=opt_net['act_mode'])
 
     # ----------------------------------------
-    # discriminator_vgg_128_SN
+    # (NOT CEHCK YET) discriminator_vgg_128_SN
     # ----------------------------------------
     elif net_type == 'discriminator_vgg_128_SN':
         from models.network_discriminator import Discriminator_VGG_128_SN as discriminator
         netD = discriminator()
 
+    # ----------------------------------------
+    # (NOT CEHCK YET) discriminator_patchgan
+    # ----------------------------------------
     elif net_type == 'discriminator_patchgan':
         from models.network_discriminator import Discriminator_PatchGAN as discriminator
         netD = discriminator(input_nc=opt_net['in_nc'],
@@ -89,11 +102,17 @@ def define_D(opt):
                              n_layers=opt_net['n_layers'],
                              norm_type=opt_net['norm_type'])
 
+    # ----------------------------------------
+    # (Recommended) discriminator_unet
+    # ----------------------------------------
     elif net_type == 'discriminator_unet':
         from models.network_discriminator import Discriminator_UNet as discriminator
         netD = discriminator(input_nc=opt_net['in_nc'],
                              ndf=opt_net['base_nc'])
 
+    # ----------------------------------------
+    # discriminator_dagan
+    # ----------------------------------------
     elif net_type == 'discriminator_dagan':
         from models.network_discriminator import Discriminator_DAGAN as discriminator
         netD = discriminator(input_nc=opt_net['in_nc'],
@@ -197,13 +216,9 @@ def define_F(opt, use_bn=False):
     return netF
 
 
-"""
 # --------------------------------------------
 # weights initialization
 # --------------------------------------------
-"""
-
-
 def init_weights(net, init_type='xavier_uniform', init_bn_type='uniform', gain=1):
     """
     # Kai Zhang, https://github.com/cszn/KAIR
